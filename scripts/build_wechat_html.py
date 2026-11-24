@@ -7,7 +7,7 @@
 用法：
     python3 build_wechat_html.py 稿件.md
     python3 build_wechat_html.py 稿件.md --out 输出.html --theme 我的主题.json
-    python3 build_wechat_html.py 稿件.md --embed-images   # 本地图片嵌进 HTML，方便单独发给别人预览
+    python3 build_wechat_html.py 稿件.md --link-images    # 本地图片不嵌入（默认嵌入，粘贴进公众号时图片自动上传）
     python3 build_wechat_html.py 稿件.md --join-lines     # 按 Markdown 原生规则：空行才分段
 
 运行后在标准输出打印一段 JSON 汇总（输出路径、标题、图片数、需要处理的提醒）。
@@ -376,25 +376,30 @@ def is_remote(src: str) -> bool:
 
 
 def resolve_image(src: str, md_dir: Path, out_dir: Path, embed: bool, warnings: list):
-    """返回 (用于 HTML 的 src, 显示名, 是否本地, 本地绝对路径或 None)。"""
+    """返回 (用于 HTML 的 src, 显示名, 是否本地, 本地绝对路径或 None, 下载链接)。
+
+    本地图片默认以 data URI 嵌进 HTML：复制正文时图片随正文进剪贴板，
+    贴进公众号编辑器后由公众号自动上传（2026-11-24 在公众号后台实测）。
+    """
     if is_remote(src):
         name = src.split("?")[0].rstrip("/").split("/")[-1] or src
-        return src, name, False, None
+        return src, name, False, None, src
     path = Path(os.path.expanduser(src))
     if not path.is_absolute():
         path = (md_dir / path).resolve()
     name = path.name
     if not path.exists():
         warnings.append(f"找不到图片：{src}（按稿件所在文件夹查找）")
-        return src, name, True, None
+        return src, name, True, None, src
+    rel = Path(os.path.relpath(path, out_dir)).as_posix()
     size_mb = path.stat().st_size / 1024 / 1024
     if size_mb > 5:
-        warnings.append(f"图片较大（{size_mb:.1f} MB）：{name}，上传公众号前建议压缩到 2 MB 左右。")
+        warnings.append(f"图片较大（{size_mb:.1f} MB）：{name}，建议先压缩到 2 MB 左右，公众号上传更稳。")
     if embed:
         mime = mimetypes.guess_type(path.name)[0] or "image/png"
         data = base64.b64encode(path.read_bytes()).decode("ascii")
-        return f"data:{mime};base64,{data}", name, True, path
-    return Path(os.path.relpath(path, out_dir)).as_posix(), name, True, path
+        return f"data:{mime};base64,{data}", name, True, path, rel
+    return rel, name, True, path, rel
 
 
 def find_name_suspects(texts):
@@ -520,7 +525,7 @@ document.getElementById('copy-placeholder').addEventListener('click', function()
   copyRich(cleanClone('placeholder'), '已复制正文（图片位置留了黄色提示行）。贴到公众号后，在提示行处上传对应图片，再删掉提示行。');
 });
 document.getElementById('copy-full').addEventListener('click', function(){
-  copyRich(cleanClone('full'), HAS_LOCAL_IMAGES ? '已复制正文（含图片）。本地图片可能贴不过去，看到裂图就换成「图片留位」那种。' : '已复制正文（含图片）。');
+  copyRich(cleanClone('full'), IMAGES_READY ? '已复制正文（含图片）。贴进公众号后图片会自动上传，等图片都显示出来再保存。' : '已复制正文（含图片）。本地图片没有嵌入，可能贴不过去，看到裂图就改用「图片留位」。');
 });
 document.getElementById('copy-title').addEventListener('click', function(){ copyPlain(ARTICLE_TITLE, '已复制标题'); });
 const sumBtn = document.getElementById('copy-summary');
@@ -582,9 +587,9 @@ def build(md_path: Path, out_path: Path, theme: dict, embed: bool, join_lines: b
         elif kind == "hr":
             add("hr", r.divider())
         elif kind == "image":
-            src, name, local, path = resolve_image(b[1], md_dir, out_dir, embed, warnings)
+            src, name, local, path, href = resolve_image(b[1], md_dir, out_dir, embed, warnings)
             idx = len(images) + 1
-            images.append({"序号": idx, "文件": name, "src": src if not src.startswith("data:") else "(已嵌入)",
+            images.append({"序号": idx, "文件": name, "href": href, "嵌入": src.startswith("data:"),
                            "本地": local, "存在": (path is not None) if local else True,
                            "路径": str(path) if path else b[1], "图注": b[2]})
             add("image", r.image(idx, src, b[2], name))
@@ -601,9 +606,9 @@ def build(md_path: Path, out_path: Path, theme: dict, embed: bool, join_lines: b
         if credits and need not in labels and not (need == "作者" and "文字" in labels):
             warnings.append(f"片尾没有「{need}」。")
     if meta.get("end_image"):
-        src, name, local, path = resolve_image(meta["end_image"], md_dir, out_dir, embed, warnings)
+        src, name, local, path, href = resolve_image(meta["end_image"], md_dir, out_dir, embed, warnings)
         idx = len(images) + 1
-        images.append({"序号": idx, "文件": name, "src": src if not src.startswith("data:") else "(已嵌入)",
+        images.append({"序号": idx, "文件": name, "href": href, "嵌入": src.startswith("data:"),
                        "本地": local, "存在": (path is not None) if local else True,
                        "路径": str(path) if path else meta["end_image"], "图注": "尾图"})
         add("image", r.image(idx, src, meta.get("end_image_caption", ""), name))
@@ -644,6 +649,12 @@ def build(md_path: Path, out_path: Path, theme: dict, embed: bool, join_lines: b
     suspects = find_name_suspects(name_texts)
 
     has_local = any(img["本地"] for img in images)
+    # 本地图片都已嵌入（或没有本地图片）时，「含图片」可以一键带图进公众号
+    images_ready = all(img["嵌入"] or not img["本地"] for img in images)
+    embedded_mb = sum(img["路径"] and Path(img["路径"]).stat().st_size for img in images
+                      if img["嵌入"]) / 1024 / 1024 if images else 0
+    if embedded_mb > 20:
+        warnings.append(f"本篇图片合计 {embedded_mb:.0f} MB，复制和上传可能变慢甚至失败；建议先压缩图片。")
     c = theme["colors"]
     placeholder_style = (f"margin:0 {theme['page_margin']}px {theme['paragraph_spacing']}px;padding:8px 10px;"
                          f"background-color:{c['placeholder_bg']};border:1px dashed {c['true_maroon']};"
@@ -653,7 +664,7 @@ def build(md_path: Path, out_path: Path, theme: dict, embed: bool, join_lines: b
     for img in images:
         cls = "" if img["存在"] else ' class="miss"'
         state = "" if img["存在"] else "（找不到文件）"
-        href = html.escape(img["src"] if img["src"] != "(已嵌入)" else "#", quote=True)
+        href = html.escape(img["href"], quote=True)
         img_rows.append(f'<li{cls}>图 {img["序号"]}：<a href="{href}" target="_blank" download>{html.escape(img["文件"])}</a>'
                         f'{"　" + html.escape(img["图注"]) if img["图注"] else ""}{state}</li>')
     img_list = (f'<div class="imgs"><strong>本篇图片（{len(images)} 张）</strong><ol style="margin:4px 0 0;padding-left:20px">'
@@ -665,13 +676,27 @@ def build(md_path: Path, out_path: Path, theme: dict, embed: bool, join_lines: b
         warn_html = '<div class="warn"><strong>排版前请看：</strong><br>' + "<br>".join(items) + "</div>"
 
     summary = meta.get("summary", "")
-    primary_full = not has_local
+    primary_full = images_ready
     buttons = (
-        f'<button id="copy-placeholder" type="button" class="{"" if primary_full else "primary"}">复制正文（图片留位）</button>'
         f'<button id="copy-full" type="button" class="{"primary" if primary_full else ""}">复制正文（含图片）</button>'
+        f'<button id="copy-placeholder" type="button" class="{"" if primary_full else "primary"}">复制正文（图片留位）</button>'
         '<button id="copy-title" type="button">复制标题</button>'
         + ('<button id="copy-summary" type="button">复制摘要</button>' if summary else "")
     )
+    if images_ready:
+        steps = [
+            "点「复制标题」，贴到公众号的标题栏。",
+            "点「复制正文（含图片）」，在公众号正文里粘贴。图片会自动上传到公众号，等几秒，看到图片都显示出来再保存。",
+            "个别图片没传上去时，删掉那张，在原位置用编辑器的图片按钮上传；或者改用「复制正文（图片留位）」，在黄色提示行处逐张上传。",
+            "在公众号里点「预览」用手机看一遍，再保存。",
+        ]
+    else:
+        steps = [
+            "点「复制标题」，贴到公众号的标题栏。",
+            "点「复制正文（图片留位）」，贴进正文；在每一行黄色提示处用编辑器的图片按钮上传对应图片，再删掉提示行。",
+            "在公众号里点「预览」用手机看一遍，再保存。",
+        ]
+    steps_html = "\n".join(f"<li>{html.escape(s)}</li>" for s in steps)
     credit_line = "　".join(f"{lab}{theme.get('credit_separator', '｜')}{val}" for lab, val in credits)
     page = f"""<!doctype html>
 <html lang="zh-CN">
@@ -690,9 +715,7 @@ def build(md_path: Path, out_path: Path, theme: dict, embed: bool, join_lines: b
 <div class="actions">{buttons}</div>
 <p id="status" role="status" aria-live="polite"></p>
 <ol class="steps">
-<li>点「复制标题」，贴到公众号的标题栏。</li>
-<li>本地图片选「复制正文（图片留位）」：贴进正文后，在每一行黄色提示处用编辑器的图片按钮上传对应图片，再删掉提示行。图片都是网上链接时，可以直接「复制正文（含图片）」。</li>
-<li>在公众号里点「预览」用手机看一遍，再保存。</li>
+{steps_html}
 </ol>
 {img_list}
 {warn_html}
@@ -709,7 +732,7 @@ def build(md_path: Path, out_path: Path, theme: dict, embed: bool, join_lines: b
 <script>
 const ARTICLE_TITLE = {json.dumps(title, ensure_ascii=False)};
 const ARTICLE_SUMMARY = {json.dumps(summary, ensure_ascii=False)};
-const HAS_LOCAL_IMAGES = {json.dumps(has_local)};
+const IMAGES_READY = {json.dumps(images_ready)};
 const PLACEHOLDER_STYLE = {json.dumps(placeholder_style, ensure_ascii=False)};
 {PAGE_JS}
 </script>
@@ -736,7 +759,9 @@ def main(argv=None):
     ap.add_argument("markdown", help="推文源稿（.md）")
     ap.add_argument("--out", help="输出 HTML 路径；默认放在源稿旁边，文件名加「-公众号排版」")
     ap.add_argument("--theme", help="自定义主题 JSON（只写要改的项）")
-    ap.add_argument("--embed-images", action="store_true", help="把本地图片嵌进 HTML，方便单独发给别人预览")
+    ap.add_argument("--link-images", action="store_true",
+                    help="本地图片不嵌入，只用相对路径（HTML 小，但贴进公众号时本地图片带不过去）")
+    ap.add_argument("--embed-images", action="store_true", help=argparse.SUPPRESS)  # 旧参数，现在默认就嵌入
     ap.add_argument("--join-lines", action="store_true", help="按 Markdown 原生规则：连续几行合成一段，空行才分段")
     args = ap.parse_args(argv)
 
@@ -747,7 +772,7 @@ def main(argv=None):
     out_path = Path(os.path.expanduser(args.out)) if args.out else md_path.with_name(md_path.stem + "-公众号排版.html")
     out_path.parent.mkdir(parents=True, exist_ok=True)
     theme = load_theme(Path(os.path.expanduser(args.theme)) if args.theme else None)
-    result = build(md_path, out_path, theme, args.embed_images, args.join_lines)
+    result = build(md_path, out_path, theme, not args.link_images, args.join_lines)
     print(json.dumps(result, ensure_ascii=False, indent=2))
     return 0
 

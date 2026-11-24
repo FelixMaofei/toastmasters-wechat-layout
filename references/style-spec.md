@@ -68,6 +68,8 @@
 <p style="margin:0 8px 8px;font-size:12px;line-height:1.6;letter-spacing:1px;color:#7A7F80;text-align:center;">图注</p>
 ```
 
+本地图片的 `src` 默认写成 data URI（`data:image/png;base64,...`）。这样复制正文时图片跟着进剪贴板，粘贴进公众号编辑器后由公众号自动上传。
+
 ## 引用
 
 ```html
