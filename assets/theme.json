@@ -1,0 +1,24 @@
+{
+  "_说明": "排版默认值。数字单位都是 px（行间距除外）。要换样式，复制本文件改好后用 --theme 传入，不直接改这份默认值。",
+  "body_size": 14,
+  "heading_sizes": [20, 18, 16, 14],
+  "line_height": 1.8,
+  "letter_spacing": 2,
+  "paragraph_spacing": 8,
+  "page_margin": 8,
+  "caption_size": 12,
+  "blank_line_around_images": true,
+  "text_align": "justify",
+  "colors": {
+    "text": "#3F3F3F",
+    "muted": "#7A7F80",
+    "loyal_blue": "#004165",
+    "true_maroon": "#772432",
+    "cool_gray": "#A9B2B1",
+    "happy_yellow": "#F2DF74",
+    "fair_gray": "#F5F5F5",
+    "highlight": "#FBF3C4",
+    "placeholder_bg": "#FFF8D6"
+  },
+  "credit_separator": "｜"
+}

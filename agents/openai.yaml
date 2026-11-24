@@ -1,0 +1,4 @@
+interface:
+  display_name: "头马公众号推文排版"
+  short_description: "把头马推文排成可直接粘贴进公众号的版式：14px 正文、20/18/16/14 标题、头马配色、片尾署名和尾图"
+  default_prompt: "请用 $toastmasters-wechat-layout 把这篇推文排成公众号版式。"
